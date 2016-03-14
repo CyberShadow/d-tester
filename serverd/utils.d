@@ -6,43 +6,17 @@ import core.vararg;
 import std.algorithm;
 import std.array;
 import std.conv;
-import std.datetime;
 import std.format;
-import std.process;
 import std.range;
 import std.stdio;
 import std.string;
 
 import etc.c.curl;
 
-import mysql;
+import log;
+import mysql_client;
 
 static const char* USERAGENT = "Auto-Tester. https://auto-tester.puremagic.com/  contact: braddr@puremagic.com";
-static string LOGNAME = "/tmp/serverd.log";
-
-void writelog(S...)(S s)
-{
-    static int mypid = -1;
-    
-    if (mypid == -1)
-        mypid = getpid();
-
-    try
-    { 
-        auto fp = File(LOGNAME, "a");
-
-        auto t = Clock.currTime();
-        t.fracSecs = msecs(0);
-        fp.writef("%05d - %s - ", mypid, t.toISOExtString());
-
-        fp.writefln(s);
-    }
-    catch (Exception e)
-    {
-        printf("uh: %.*s", e.toString.length, e.toString.ptr);
-        // maybe get fcgi_err visible here and write to it?
-    }
-}
 
 string lookup(const ref string[string] hash, string key)
 {
@@ -73,7 +47,7 @@ bool auth_check(string raddr, Appender!string outstr)
 
 bool check_addr(string addr)
 {
-    static bool check_set(sqlrow[] rows, string addr)
+    static bool check_set(Results rows, string addr)
     {
         foreach(row; rows)
         {
@@ -87,16 +61,14 @@ bool check_addr(string addr)
         return false;
     }
 
-    sql_exec("select ipaddr from authorized_addresses where enabled = 1");
-    sqlrow[] rows = sql_rows();
+    Results r = mysql.query("select ipaddr from authorized_addresses where enabled = 1");
 
-    if (check_set(rows, addr))
+    if (check_set(r, addr))
         return true;
 
-    sql_exec(text("select ipaddr from build_hosts where enabled = 1 and ipaddr = \"", addr, "\""));
-    rows = sql_rows();
+    r = mysql.query(text("select ipaddr from build_hosts where enabled = 1 and ipaddr = \"", addr, "\""));
 
-    if (check_set(rows, addr))
+    if (check_set(r, addr))
         return true;
 
     return false;
@@ -104,24 +76,24 @@ bool check_addr(string addr)
 
 bool getAccessTokenFromCookie(string cookie, string csrf, ref string access_token, ref string userid, ref string username)
 {
-    sql_exec(text("select id, username, access_token, csrf from github_users where cookie=\"", cookie, "\" and csrf=\"", csrf, "\""));
-    sqlrow[] rows = sql_rows();
-    if (rows.length != 1)
+    Results r = mysql.query(text("select id, username, access_token, csrf from github_users where cookie=\"", cookie, "\" and csrf=\"", csrf, "\""));
+    sqlrow row = getExactlyOneRow(r);
+    if (!row)
     {
-        writelog("  found %s rows, expected 1, for cookie '%s', csrf '%s'", rows.length, cookie, csrf);
+        writelog("  expected 1 row, for cookie '%s', csrf '%s'", cookie, csrf);
         return false;
     }
 
-    userid = rows[0][0];
-    username = rows[0][1];
-    access_token = rows[0][2];
+    userid = row[0];
+    username = row[1];
+    access_token = row[2];
 
     return true;
 }
 
 void updateHostLastCheckin(string hostid, string clientver)
 {
-    sql_exec(text("update build_hosts set last_heard_from = now(), clientver = ", clientver, " where id = ", hostid));
+    mysql.query(text("update build_hosts set last_heard_from = now(), clientver = ", clientver, " where id = ", hostid));
 }
 
 extern(C) size_t handleBodyData(char *ptr, size_t size, size_t nmemb, void *userdata)
